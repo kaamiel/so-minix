@@ -1,0 +1,352 @@
+diff -rupN oryginalne-zrodla/usr/include/minix/callnr.h source/usr/include/minix/callnr.h
+--- oryginalne-zrodla/usr/include/minix/callnr.h	2014-09-14 11:00:44.000000000 +0200
++++ source/usr/include/minix/callnr.h	2019-04-28 20:14:57.858114129 +0200
+@@ -58,8 +58,9 @@
+ #define PM_GETEPINFO		(PM_BASE + 45)
+ #define PM_GETPROCNR		(PM_BASE + 46)
+ #define PM_GETSYSINFO		(PM_BASE + 47)
++#define PM_DISTORT_TIME		(PM_BASE + 48)
+ 
+-#define NR_PM_CALLS		48	/* highest number from base plus one */
++#define NR_PM_CALLS		49	/* highest number from base plus one */
+ 
+ /*===========================================================================*
+  *				Calls to VFS				     *
+diff -rupN oryginalne-zrodla/usr/include/minix/ipc.h source/usr/include/minix/ipc.h
+--- oryginalne-zrodla/usr/include/minix/ipc.h	2014-09-14 11:00:44.000000000 +0200
++++ source/usr/include/minix/ipc.h	2019-04-29 02:16:09.271945375 +0200
+@@ -1588,6 +1588,14 @@ typedef struct {
+ _ASSERT_MSG_SIZE(mess_pm_sched_scheduling_set_nice);
+ 
+ typedef struct {
++	pid_t pid;
++	uint8_t scale;
++
++	uint8_t padding[51];
++} mess_pm_distort_time;
++_ASSERT_MSG_SIZE(mess_pm_distort_time);
++
++typedef struct {
+ 	int status;
+ 
+ 	uint8_t padding[52];
+@@ -2208,6 +2216,7 @@ typedef struct {
+ 		mess_pm_lsys_getprocnr	m_pm_lsys_getprocnr;
+ 		mess_pm_lsys_sigs_signal m_pm_lsys_sigs_signal;
+ 		mess_pm_sched_scheduling_set_nice m_pm_sched_scheduling_set_nice;
++		mess_pm_distort_time	m_pm_distort_time;
+ 		mess_readclock_lc_rtcdev m_readclock_lc_rtcdev;
+ 		mess_rs_init		m_rs_init;
+ 		mess_rs_pm_exec_restart	m_rs_pm_exec_restart;
+diff -rupN oryginalne-zrodla/usr/include/unistd.h source/usr/include/unistd.h
+--- oryginalne-zrodla/usr/include/unistd.h	2014-09-14 11:00:43.000000000 +0200
++++ source/usr/include/unistd.h	2019-04-28 20:35:36.566288164 +0200
+@@ -411,5 +411,7 @@ extern	 int optreset;		/* getopt(3) exte
+ extern	 char *suboptarg;	/* getsubopt(3) external variable */
+ #endif
+ 
++int	 distort_time(pid_t, uint8_t);
++
+ __END_DECLS
+ #endif /* !_UNISTD_H_ */
+diff -rupN oryginalne-zrodla/usr/src/include/unistd.h source/usr/src/include/unistd.h
+--- oryginalne-zrodla/usr/src/include/unistd.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/include/unistd.h	2019-04-28 20:35:56.250692445 +0200
+@@ -411,5 +411,7 @@ extern	 int optreset;		/* getopt(3) exte
+ extern	 char *suboptarg;	/* getsubopt(3) external variable */
+ #endif
+ 
++int	 distort_time(pid_t, uint8_t);
++
+ __END_DECLS
+ #endif /* !_UNISTD_H_ */
+diff -rupN oryginalne-zrodla/usr/src/lib/libc/misc/distort_time.c source/usr/src/lib/libc/misc/distort_time.c
+--- oryginalne-zrodla/usr/src/lib/libc/misc/distort_time.c	1970-01-01 01:00:00.000000000 +0100
++++ source/usr/src/lib/libc/misc/distort_time.c	2019-04-29 21:47:14.010872052 +0200
+@@ -0,0 +1,23 @@
++/*
++distort_time.c
++*/
++
++#include <sys/cdefs.h>
++#include <errno.h>
++#include <lib.h>
++#include <unistd.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/types.h>
++
++int distort_time(pid_t pid, uint8_t scale)
++{
++    message m;
++    memset(&m, 0, sizeof(m));
++    m.m_pm_distort_time.pid = pid;
++    m.m_pm_distort_time.scale = scale;
++
++    int r = _syscall(PM_PROC_NR, PM_DISTORT_TIME, &m);
++    return (r < 0 ? errno : r);
++}
+\ Brak znaku nowej linii na końcu pliku
+diff -rupN oryginalne-zrodla/usr/src/lib/libc/misc/Makefile.inc source/usr/src/lib/libc/misc/Makefile.inc
+--- oryginalne-zrodla/usr/src/lib/libc/misc/Makefile.inc	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/lib/libc/misc/Makefile.inc	2019-04-28 20:42:24.057777777 +0200
+@@ -8,3 +8,6 @@ SRCS+=	initfini.c
+ 
+ # for -fstack-protector
+ SRCS+=	stack_protector.c
++
++# distort_time
++SRCS+=	distort_time.c
+diff -rupN oryginalne-zrodla/usr/src/minix/include/minix/callnr.h source/usr/src/minix/include/minix/callnr.h
+--- oryginalne-zrodla/usr/src/minix/include/minix/callnr.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/include/minix/callnr.h	2019-04-28 20:14:36.237352538 +0200
+@@ -58,8 +58,9 @@
+ #define PM_GETEPINFO		(PM_BASE + 45)
+ #define PM_GETPROCNR		(PM_BASE + 46)
+ #define PM_GETSYSINFO		(PM_BASE + 47)
++#define PM_DISTORT_TIME		(PM_BASE + 48)
+ 
+-#define NR_PM_CALLS		48	/* highest number from base plus one */
++#define NR_PM_CALLS		49	/* highest number from base plus one */
+ 
+ /*===========================================================================*
+  *				Calls to VFS				     *
+diff -rupN oryginalne-zrodla/usr/src/minix/include/minix/ipc.h source/usr/src/minix/include/minix/ipc.h
+--- oryginalne-zrodla/usr/src/minix/include/minix/ipc.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/include/minix/ipc.h	2019-04-29 10:25:12.293147481 +0200
+@@ -1588,6 +1588,14 @@ typedef struct {
+ _ASSERT_MSG_SIZE(mess_pm_sched_scheduling_set_nice);
+ 
+ typedef struct {
++	pid_t pid;
++	uint8_t scale;
++
++	uint8_t padding[51];
++} mess_pm_distort_time;
++_ASSERT_MSG_SIZE(mess_pm_distort_time);
++
++typedef struct {
+ 	int status;
+ 
+ 	uint8_t padding[52];
+@@ -2208,6 +2216,7 @@ typedef struct {
+ 		mess_pm_lsys_getprocnr	m_pm_lsys_getprocnr;
+ 		mess_pm_lsys_sigs_signal m_pm_lsys_sigs_signal;
+ 		mess_pm_sched_scheduling_set_nice m_pm_sched_scheduling_set_nice;
++		mess_pm_distort_time	m_pm_distort_time;
+ 		mess_readclock_lc_rtcdev m_readclock_lc_rtcdev;
+ 		mess_rs_init		m_rs_init;
+ 		mess_rs_pm_exec_restart	m_rs_pm_exec_restart;
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/pm/forkexit.c source/usr/src/minix/servers/pm/forkexit.c
+--- oryginalne-zrodla/usr/src/minix/servers/pm/forkexit.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/pm/forkexit.c	2019-04-30 16:56:21.357766229 +0200
+@@ -109,6 +109,13 @@ int do_fork()
+   for (i = 0; i < NR_ITIMERS; i++)
+ 	rmc->mp_interval[i] = 0;	/* reset timer intervals */
+ 
++  /* Don't inherit time distortion. */
++  rmc->mp_distorted = 0;
++  rmc->mp_distort_scale = 0;
++  rmc->mp_speedup = 0;
++  rmc->mp_reference_time.sec = 0;
++  rmc->mp_reference_time.nsec = 0;
++
+   /* Find a free pid for the child and put it in the table. */
+   new_pid = get_free_pid();
+   rmc->mp_pid = new_pid;	/* assign pid to child */
+@@ -201,6 +208,13 @@ int do_srv_fork()
+   for (i = 0; i < NR_ITIMERS; i++)
+ 	rmc->mp_interval[i] = 0;	/* reset timer intervals */
+ 
++  /* Don't inherit time distortion. */
++  rmc->mp_distorted = 0;
++  rmc->mp_distort_scale = 0;
++  rmc->mp_speedup = 0;
++  rmc->mp_reference_time.sec = 0;
++  rmc->mp_reference_time.nsec = 0;
++
+   /* Find a free pid for the child and put it in the table. */
+   new_pid = get_free_pid();
+   rmc->mp_pid = new_pid;	/* assign pid to child */
+@@ -725,6 +739,7 @@ register struct mproc *rmp;	/* tells whi
+   rmp->mp_flags = 0;
+   rmp->mp_child_utime = 0;
+   rmp->mp_child_stime = 0;
++  rmp->mp_distorted = 0;
+   procs_in_use--;
+ }
+ 
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/pm/main.c source/usr/src/minix/servers/pm/main.c
+--- oryginalne-zrodla/usr/src/minix/servers/pm/main.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/pm/main.c	2019-04-30 15:23:09.073489416 +0200
+@@ -215,6 +215,13 @@ static int sef_cb_init_fresh(int UNUSED(
+ 		/* Get kernel endpoint identifier. */
+ 		rmp->mp_endpoint = ip->endpoint;
+ 
++		/* Clean up time distortion info. */
++		rmp->mp_distorted = 0;
++		rmp->mp_distort_scale = 0;
++		rmp->mp_speedup = 0;
++		rmp->mp_reference_time.sec = 0;
++		rmp->mp_reference_time.nsec = 0;
++
+ 		/* Tell VFS about this system process. */
+ 		memset(&mess, 0, sizeof(mess));
+ 		mess.m_type = VFS_PM_INIT;
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/pm/mproc.h source/usr/src/minix/servers/pm/mproc.h
+--- oryginalne-zrodla/usr/src/minix/servers/pm/mproc.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/pm/mproc.h	2019-04-30 15:17:12.408471697 +0200
+@@ -69,6 +69,15 @@ EXTERN struct mproc {
+ 
+   char mp_name[PROC_NAME_LEN];	/* process name */
+ 
++  /* distort_time */
++  char mp_distorted;		/* 1 means distorted, 0 means not */
++  uint8_t mp_distort_scale;
++  char mp_speedup;		/* 1 means speedup, 0 means slowdown */
++  struct mp_reference_time {
++    time_t sec;
++    long nsec;
++  } mp_reference_time;
++
+   int mp_magic;			/* sanity check, MP_MAGIC */
+ } mproc[NR_PROCS];
+ 
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/pm/proto.h source/usr/src/minix/servers/pm/proto.h
+--- oryginalne-zrodla/usr/src/minix/servers/pm/proto.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/pm/proto.h	2019-04-28 20:26:35.929294440 +0200
+@@ -77,6 +77,7 @@ int do_time(void);
+ int do_getres(void);
+ int do_gettime(void);
+ int do_settime(void);
++int do_distort_time(void);
+ 
+ /* trace.c */
+ int do_trace(void);
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/pm/table.c source/usr/src/minix/servers/pm/table.c
+--- oryginalne-zrodla/usr/src/minix/servers/pm/table.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/pm/table.c	2019-04-28 20:20:45.721148164 +0200
+@@ -58,5 +58,6 @@ int (* const call_vec[NR_PM_CALLS])(void
+ 	CALL(PM_EXEC_RESTART)	= do_execrestart,
+ 	CALL(PM_GETEPINFO)	= do_getepinfo,		/* getepinfo(2) */
+ 	CALL(PM_GETPROCNR)	= do_getprocnr,		/* getprocnr(2) */
+-	CALL(PM_GETSYSINFO)	= do_getsysinfo		/* getsysinfo(2) */
++	CALL(PM_GETSYSINFO)	= do_getsysinfo,	/* getsysinfo(2) */
++	CALL(PM_DISTORT_TIME)	= do_distort_time	/* distort_time */
+ };
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/pm/time.c source/usr/src/minix/servers/pm/time.c
+--- oryginalne-zrodla/usr/src/minix/servers/pm/time.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/pm/time.c	2019-04-30 16:28:47.062145583 +0200
+@@ -77,6 +77,11 @@ int do_settime()
+ 	case CLOCK_REALTIME:
+ 		s = sys_settime(m_in.m_lc_pm_time.now, m_in.m_lc_pm_time.clk_id,
+ 			m_in.m_lc_pm_time.sec, m_in.m_lc_pm_time.nsec);
++		struct mproc *proc;
++		for (proc = &mproc[0]; proc < &mproc[NR_PROCS]; proc++) {
++			proc->mp_reference_time.sec = 0;
++			proc->mp_reference_time.nsec = 0;
++		}
+ 		return(s);
+ 	case CLOCK_MONOTONIC: /* monotonic cannot be changed */
+ 	default:
+@@ -104,6 +109,46 @@ int do_time()
+   mp->mp_reply.m_pm_lc_time.sec = boottime + (realtime / system_hz);
+   mp->mp_reply.m_pm_lc_time.nsec =
+ 	(uint32_t) ((realtime % system_hz) * 1000000000ULL / system_hz);
++  if (mp->mp_distorted) {
++  	if (mp->mp_reference_time.sec > 0) {
++  		if (mp->mp_distort_scale == 0) {
++  			mp->mp_reply.m_pm_lc_time.sec = mp->mp_reference_time.sec;
++  			mp->mp_reply.m_pm_lc_time.nsec = mp->mp_reference_time.nsec;
++  		} else if (mp->mp_distort_scale != 1) {
++  			time_t sec = mp->mp_reply.m_pm_lc_time.sec;
++			int64_t nsec = mp->mp_reply.m_pm_lc_time.nsec;
++			time_t diff_sec = sec - mp->mp_reference_time.sec;
++			int64_t diff_nsec;
++			if (nsec >= mp->mp_reference_time.nsec) {
++				diff_nsec = nsec - mp->mp_reference_time.nsec;
++			} else {
++				diff_sec--;
++				diff_nsec = 1000000000ULL - mp->mp_reference_time.nsec + nsec;
++			}
++			if (mp->mp_speedup) {
++				sec += (mp->mp_distort_scale - 1) * diff_sec;
++				nsec += (mp->mp_distort_scale - 1) * diff_nsec;
++				sec += (nsec / 1000000000ULL);
++				nsec %= 1000000000ULL;
++			} else {
++				sec -= (mp->mp_distort_scale - 1) * diff_sec / mp->mp_distort_scale;
++				nsec -= (mp->mp_distort_scale - 1) * diff_nsec / mp->mp_distort_scale;
++				nsec -= ((mp->mp_distort_scale - 1) * diff_sec % mp->mp_distort_scale)
++					* 1000000000ULL / mp->mp_distort_scale;
++				if (nsec < 0) {
++					sec--;
++					nsec += 1000000000ULL;
++				}
++			}
++
++			mp->mp_reply.m_pm_lc_time.sec = sec;
++  			mp->mp_reply.m_pm_lc_time.nsec = nsec;
++  		}
++  	} else {
++  		mp->mp_reference_time.sec = mp->mp_reply.m_pm_lc_time.sec;
++  		mp->mp_reference_time.nsec = mp->mp_reply.m_pm_lc_time.nsec;
++  	}
++  }
+   return(OK);
+ }
+ 
+@@ -132,3 +177,51 @@ int do_stime()
+ 
+   return(OK);
+ }
++
++/*===========================================================================*
++ *				do_distort_time				     *
++ *===========================================================================*/
++int do_distort_time()
++{
++    pid_t pid = m_in.m_pm_distort_time.pid;         /* pid */
++    if (pid == mp->mp_pid) {    /* calling process' and given pids are the same */
++        return EPERM;
++    }
++    struct mproc *proc = find_proc(pid);
++    if (proc == NULL) {
++        return EINVAL;          /* the process with the given pid does not exist */
++    }
++
++    struct mproc *parent;
++    char found = 0, speedup = 0;
++    for (parent = &mproc[mp->mp_parent]; parent->mp_pid != INIT_PID; parent = &mproc[parent->mp_parent]) {
++        if (parent == proc) {
++            found = 1;
++            break;
++        }
++    }
++    if (parent == proc) {
++        found = 1;
++    }
++    if (!found) {
++        for (parent = &mproc[proc->mp_parent]; parent->mp_pid != INIT_PID; parent = &mproc[parent->mp_parent]) {
++            if (parent == mp) {
++                found = 1;
++                speedup = 1;
++                break;
++            }
++        }
++        if (parent == mp) {
++            found = 1;
++        }
++        if (!found) {
++            return EPERM;       /* processes are not related in a straight line */
++        }
++    }
++
++    proc->mp_distorted = 1;
++    proc->mp_distort_scale = m_in.m_pm_distort_time.scale;
++    proc->mp_speedup = speedup;
++
++    return(OK);
++}
+\ Brak znaku nowej linii na końcu pliku
