@@ -47,7 +47,7 @@ procesowi P rzeczywisty czas (nowy punkt odniesienia) i dopiero kolejne odczyty 
 * Jeśli procesy P i C nie są spokrewnione w linii prostej: `return EPERM`.
 * Jeśli `scale == 0`: odczytywany czas dla procesu P powinien stać w miejscu.
 
-###Przykład
+### Przykład
 
 ```
 P1: proces
