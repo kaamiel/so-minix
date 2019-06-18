@@ -1,0 +1,144 @@
+diff -rupN oryginalne-zrodla/usr/src/minix/fs/mfs/inode.c source/usr/src/minix/fs/mfs/inode.c
+--- oryginalne-zrodla/usr/src/minix/fs/mfs/inode.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/fs/mfs/inode.c	2019-06-09 16:55:10.646199243 +0200
+@@ -323,6 +323,7 @@ register struct inode *rip;	/* the inode
+   register int i;
+ 
+   rip->i_size = 0;
++  rip->i_ctime &= (~020000000000);
+   rip->i_update = ATIME | CTIME | MTIME;	/* update all times later */
+   IN_MARKDIRTY(rip);
+   for (i = 0; i < V2_NR_TZONES; i++) rip->i_zone[i] = NO_ZONE;
+@@ -371,7 +372,7 @@ register struct inode *rip;	/* pointer t
+ 
+   cur_time = clock_time();
+   if (rip->i_update & ATIME) rip->i_atime = cur_time;
+-  if (rip->i_update & CTIME) rip->i_ctime = cur_time;
++  if (rip->i_update & CTIME) rip->i_ctime = cur_time | (rip->i_ctime & 020000000000);
+   if (rip->i_update & MTIME) rip->i_mtime = cur_time;
+   rip->i_update = 0;		/* they are all up-to-date now */
+ }
+diff -rupN oryginalne-zrodla/usr/src/minix/fs/mfs/link.c source/usr/src/minix/fs/mfs/link.c
+--- oryginalne-zrodla/usr/src/minix/fs/mfs/link.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/fs/mfs/link.c	2019-06-09 18:50:35.759078626 +0200
+@@ -116,10 +116,11 @@ int fs_unlink()
+  * may be used by the superuser to do dangerous things; rmdir() may not.
+  */
+   register struct inode *rip;
+-  struct inode *rldirp;
++  struct inode *rldirp, *mode = NULL;
+   int r;
+-  char string[MFS_NAME_MAX];
++  char string[MFS_NAME_MAX], bak_string[MFS_NAME_MAX];
+   phys_bytes len;
++  ino_t numb;
+   
+   /* Copy the last component */
+   len = min(fs_m_in.m_vfs_fs_unlink.path_len, sizeof(string));
+@@ -127,7 +128,6 @@ int fs_unlink()
+   		       (vir_bytes) 0, (vir_bytes) string, (size_t) len);
+   if (r != OK) return r;
+   NUL(string, len, sizeof(string));
+-  
+   /* Temporarily open the dir. */
+   if((rldirp = get_inode(fs_dev, fs_m_in.m_vfs_fs_unlink.inode)) == NULL)
+ 	  return(EINVAL);
+@@ -156,12 +156,71 @@ int fs_unlink()
+ 	  if( (rip->i_mode & I_TYPE) == I_DIRECTORY) r = EPERM;
+ 
+ 	  /* Actually try to unlink the file; fails if parent is mode 0 etc. */
+-	  if (r == OK) r = unlink_file(rldirp, rip, string);
++	  if (r == OK){
++	  	if (strcmp(string, "A.mode") == 0 || strcmp(string, "B.mode") == 0 || strcmp(string, "C.mode") == 0) {
++	  		r = unlink_file(rldirp, rip, string);
++	  	} else {
++	  		mode = advance(rldirp, "A.mode", IGN_PERM);
++  			if (err_code == OK && (mode->i_mode & I_TYPE) == I_REGULAR) { // mode A
++  				r = EPERM;
++  				goto put_inodes;
++  			}
++  			put_inode(mode);
++  			mode = advance(rldirp, "B.mode", IGN_PERM);
++  			if (err_code == OK && (mode->i_mode & I_TYPE) == I_REGULAR) { // mode B
++  				if (rip->i_ctime & 020000000000) { // second attempt to remove
++  					r = unlink_file(rldirp, rip, string);
++  				} else { // first attempt to remove
++  					rip->i_ctime |= 020000000000;
++  					rip->i_update |= CTIME;
++  					IN_MARKDIRTY(rip);
++  					r = EINPROGRESS;
++  				}
++  				goto put_inodes;
++  			}
++  			put_inode(mode);
++  			mode = advance(rldirp, "C.mode", IGN_PERM);
++  			if (err_code == OK && (mode->i_mode & I_TYPE) == I_REGULAR) { // mode C
++  				if (len >= 5 && (strcmp(string + len - 5, ".bak") == 0
++  					|| strncmp(string + len - 4, ".bak", 4) == 0)) { // backup file
++  					r = unlink_file(rldirp, rip, string);
++  				} else {
++  					if (len >= MFS_NAME_MAX - 2) {
++	  					r = ENAMETOOLONG;
++	  					goto put_inodes;
++	  				}
++  					numb = rip->i_num;
++  					strcpy(bak_string, string);
++  					if (len == MFS_NAME_MAX - 3) {
++  						strncpy(bak_string + len - 1, ".bak", 4);
++  					} else {
++  						strcat(bak_string, ".bak");
++  					}
++  					put_inode(mode);
++  					mode = advance(rldirp, bak_string, IGN_PERM);
++  					if (err_code == OK) {
++  						r = EEXIST;
++  						goto put_inodes;
++  					}
++  					r = search_dir(rldirp, string, NULL, DELETE, IGN_PERM);
++					if(r == OK) {
++						(void) search_dir(rldirp, bak_string, &numb, ENTER, IGN_PERM);
++					}
++  				}
++  				goto put_inodes;
++  			}
++  			// standard mode
++			r = unlink_file(rldirp, rip, string);
++			goto put_inodes;
++	  	}
++	  }
+   } else {
+ 	  r = remove_dir(rldirp, rip, string); /* call is RMDIR */
+   }
+ 
++put_inodes:
+   /* If unlink was possible, it has been done, otherwise it has not. */
++  put_inode(mode);
+   put_inode(rip);
+   put_inode(rldirp);
+   return(r);
+@@ -407,7 +466,12 @@ int fs_rename()
+ 			r = EMLINK;
+ 		}
+ 	} else {
+-		if(old_ip == new_ip) r = SAME; /* old=new */
++		if(old_ip == new_ip) { /* old=new */
++			r = SAME;
++			new_ip->i_ctime &= (~020000000000);
++			new_ip->i_update |= CTIME;
++			IN_MARKDIRTY(new_ip);
++		}
+ 		
+ 		ndir = ((new_ip->i_mode & I_TYPE) == I_DIRECTORY);/* dir ? */
+ 		if(odir == TRUE && ndir == FALSE) r = ENOTDIR;
+diff -rupN oryginalne-zrodla/usr/src/minix/fs/mfs/stadir.c source/usr/src/minix/fs/mfs/stadir.c
+--- oryginalne-zrodla/usr/src/minix/fs/mfs/stadir.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/fs/mfs/stadir.c	2019-06-09 02:11:12.159049764 +0200
+@@ -74,7 +74,7 @@ static int stat_inode(
+   statbuf.st_size = rip->i_size;
+   statbuf.st_atime = rip->i_atime;
+   statbuf.st_mtime = rip->i_mtime;
+-  statbuf.st_ctime = rip->i_ctime;
++  statbuf.st_ctime = rip->i_ctime & (~020000000000);
+   statbuf.st_blksize = lmfs_fs_block_size();
+   statbuf.st_blocks = estimate_blocks(rip);
+ 
