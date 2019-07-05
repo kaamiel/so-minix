@@ -1,0 +1,342 @@
+diff -rupN oryginalne-zrodla/usr/src/minix/include/minix/config.h source/usr/src/minix/include/minix/config.h
+--- oryginalne-zrodla/usr/src/minix/include/minix/config.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/include/minix/config.h	2019-05-23 00:17:01.797208003 +0200
+@@ -59,11 +59,10 @@
+ /* Scheduling priorities. Values must start at zero (highest
+  * priority) and increment.
+  */
+-#define NR_SCHED_QUEUES   16	/* MUST equal minimum priority + 1 */
++#define NR_SCHED_QUEUES   10	/* MUST equal minimum priority + 1 */ /* eas_2019 */
+ #define TASK_Q		   0	/* highest, used for kernel tasks */
+-#define MAX_USER_Q  	   0    /* highest priority for user processes */   
+-#define USER_Q  	  ((MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q) /* default
+-						(should correspond to nice 0) */
++#define MAX_USER_Q  	   7    /* highest priority for user processes */ /* eas_2019 */
++#define USER_Q  	  MAX_USER_Q /* default (should correspond to nice 0) */ /* eas_2019 */
+ #define MIN_USER_Q	  (NR_SCHED_QUEUES - 1)	/* minimum priority for user
+ 						   processes */
+ /* default scheduling quanta */
+diff -rupN oryginalne-zrodla/usr/src/minix/kernel/proc.c source/usr/src/minix/kernel/proc.c
+--- oryginalne-zrodla/usr/src/minix/kernel/proc.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/kernel/proc.c	2019-05-27 17:13:49.932412874 +0200
+@@ -116,7 +116,7 @@ static void set_idle_name(char * name, i
+ 		break;							\
+ 	}
+ 
+-void proc_init(void)
++void proc_init(void) /* eas_2019 */
+ {
+ 	struct proc * rp;
+ 	struct priv *sp;
+@@ -133,6 +133,7 @@ void proc_init(void)
+ 		rp->p_endpoint = _ENDPOINT(0, rp->p_nr); /* generation no. 0 */
+ 		rp->p_scheduler = NULL;		/* no user space scheduler */
+ 		rp->p_priority = 0;		/* no priority */
++                rp->p_last_pick_time = 0;       /* not picked */
+ 		rp->p_quantum_size_ms = 0;	/* no quantum size */
+ 
+ 		/* arch-specific initialization */
+@@ -231,7 +232,7 @@ static void idle(void)
+ /*===========================================================================*
+  *				switch_to_user				     * 
+  *===========================================================================*/
+-void switch_to_user(void)
++void switch_to_user(void) /* eas_2019 */
+ {
+ 	/* This function is called an instant before proc_ptr is
+ 	 * to be scheduled again.
+@@ -257,10 +258,13 @@ not_runnable_pick_new:
+ 	if (proc_is_preempted(p)) {
+ 		p->p_rts_flags &= ~RTS_PREEMPTED;
+ 		if (proc_is_runnable(p)) {
+-			if (p->p_cpu_time_left)
++			if (p->p_cpu_time_left) {
+ 				enqueue_head(p);
+-			else
++                        }
++			else {
++                                p->p_last_pick_time = get_monotonic();
+ 				enqueue(p);
++                        }
+ 		}
+ 	}
+ 
+@@ -1711,7 +1715,7 @@ void dequeue(struct proc *rp)
+ /*===========================================================================*
+  *				pick_proc				     * 
+  *===========================================================================*/
+-static struct proc * pick_proc(void)
++static struct proc * pick_proc(void) /* eas_2019 */
+ {
+ /* Decide who to run now.  A new process is selected an returned.
+  * When a billable process is selected, record it in 'bill_ptr', so that the 
+@@ -1721,14 +1725,16 @@ static struct proc * pick_proc(void)
+  */
+   register struct proc *rp;			/* process to run */
+   struct proc **rdy_head;
+-  int q;				/* iterate over queues */
++  int q, i;				/* iterate over queues */
++  static clock_t epoch_beginning[2] = {1, 1};
++  static char pick_priority_3 = 0;
+ 
+   /* Check each of the scheduling queues for ready processes. The number of
+    * queues is defined in proc.h, and priorities are set in the task table.
+    * If there are no processes ready to run, return NULL.
+    */
+   rdy_head = get_cpulocal_var(run_q_head);
+-  for (q=0; q < NR_SCHED_QUEUES; q++) {	
++  for (q=0; q < MAX_USER_Q; q++) {
+ 	if(!(rp = rdy_head[q])) {
+ 		TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
+ 		continue;
+@@ -1738,6 +1744,38 @@ static struct proc * pick_proc(void)
+ 		get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
+ 	return rp;
+   }
++  if (pick_priority_3) {
++       pick_priority_3 = 0;
++       epoch_beginning[1] = get_monotonic();
++       if(!(rp = rdy_head[MAX_USER_Q + 2])) {
++               TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
++       } else {
++               assert(proc_is_runnable(rp));
++               if (priv(rp)->s_flags & BILLABLE)               
++                       get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
++               return rp;
++       }
++  }
++  for (i = 0; i < 2; ++i) {
++          for (q = MAX_USER_Q; q < NR_SCHED_QUEUES; q++) {     
++               if(!(rp = rdy_head[q])) {
++                       TRACE(VF_PICKPROC, printf("cpu %d queue %d empty\n", cpuid, q););
++                       continue;
++               }
++               assert(proc_is_runnable(rp));
++               if (q == MAX_USER_Q && rp->p_last_pick_time > epoch_beginning[0]) {
++                       epoch_beginning[0] = get_monotonic();
++                       continue;
++               }
++               if (priv(rp)->s_flags & BILLABLE)               
++                       get_cpulocal_var(bill_ptr) = rp; /* bill for system time */
++               if (q == MAX_USER_Q + 1 &&
++                       (rp->p_nextready == NULL || rp->p_nextready->p_last_pick_time > epoch_beginning[1])) {
++                       pick_priority_3 = 1;
++               }
++               return rp;
++          }
++  }
+   return NULL;
+ }
+ 
+diff -rupN oryginalne-zrodla/usr/src/minix/kernel/proc.h source/usr/src/minix/kernel/proc.h
+--- oryginalne-zrodla/usr/src/minix/kernel/proc.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/kernel/proc.h	2019-05-23 00:02:59.838593078 +0200
+@@ -19,7 +19,7 @@
+ #include "const.h"
+ #include "priv.h"
+ 
+-struct proc {
++struct proc { /* eas_2019 */
+   struct stackframe_s p_reg;	/* process' registers saved in stack frame */
+   struct segframe p_seg;	/* segment descriptors */
+   proc_nr_t p_nr;		/* number of this process (for fast access) */
+@@ -28,6 +28,7 @@ struct proc {
+   volatile u32_t p_misc_flags;	/* flags that do not suspend the process */
+ 
+   char p_priority;		/* current process priority */
++  clock_t p_last_pick_time;	/* time when the process was last picked */
+   u64_t p_cpu_time_left;	/* time left to use the cpu */
+   unsigned p_quantum_size_ms;	/* assigned time quantum in ms
+ 				   FIXME remove this */
+diff -rupN oryginalne-zrodla/usr/src/minix/kernel/system/do_schedctl.c source/usr/src/minix/kernel/system/do_schedctl.c
+--- oryginalne-zrodla/usr/src/minix/kernel/system/do_schedctl.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/kernel/system/do_schedctl.c	2019-05-23 00:04:38.830900950 +0200
+@@ -4,7 +4,7 @@
+ /*===========================================================================*
+  *			          do_schedctl			     *
+  *===========================================================================*/
+-int do_schedctl(struct proc * caller, message * m_ptr)
++int do_schedctl(struct proc * caller, message * m_ptr) /* eas_2019 */
+ {
+ 	struct proc *p;
+ 	uint32_t flags;
+@@ -40,6 +40,7 @@ int do_schedctl(struct proc * caller, me
+ 	} else {
+ 		/* the caller becomes the scheduler */
+ 		p->p_scheduler = caller;
++		p->p_last_pick_time = 0;
+ 	}
+ 
+ 	return(OK);
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/sched/main.c source/usr/src/minix/servers/sched/main.c
+--- oryginalne-zrodla/usr/src/minix/servers/sched/main.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/sched/main.c	2019-05-23 00:05:23.071038485 +0200
+@@ -18,7 +18,7 @@ struct machine machine;		/* machine info
+ /*===========================================================================*
+  *				main					     *
+  *===========================================================================*/
+-int main(void)
++int main(void) /* eas_2019 */
+ {
+ 	/* Main routine of the scheduler. */
+ 	message m_in;	/* the incoming message itself is kept here. */
+@@ -33,8 +33,6 @@ int main(void)
+ 
+ 	if (OK != (s=sys_getmachine(&machine)))
+ 		panic("couldn't get machine info: %d", s);
+-	/* Initialize scheduling timers, used for running balance_queues */
+-	init_scheduling();
+ 
+ 	/* This is SCHED's main loop - get work and do it, forever and forever. */
+ 	while (TRUE) {
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/sched/proto.h source/usr/src/minix/servers/sched/proto.h
+--- oryginalne-zrodla/usr/src/minix/servers/sched/proto.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/sched/proto.h	2019-05-22 20:06:17.282316486 +0200
+@@ -1,7 +1,6 @@
+ /* Function prototypes. */
+ 
+ struct schedproc;
+-#include <minix/timers.h>
+ 
+ /* main.c */
+ int main(void);
+@@ -12,7 +11,6 @@ int do_noquantum(message *m_ptr);
+ int do_start_scheduling(message *m_ptr);
+ int do_stop_scheduling(message *m_ptr);
+ int do_nice(message *m_ptr);
+-void init_scheduling(void);
+ 
+ /* utility.c */
+ int no_sys(int who_e, int call_nr);
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/sched/schedproc.h source/usr/src/minix/servers/sched/schedproc.h
+--- oryginalne-zrodla/usr/src/minix/servers/sched/schedproc.h	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/sched/schedproc.h	2019-05-23 00:07:53.563506133 +0200
+@@ -20,7 +20,7 @@
+  * process owner, process group or cpumask.
+  */
+ 
+-EXTERN struct schedproc {
++EXTERN struct schedproc { /* eas_2019 */
+ 	endpoint_t endpoint;	/* process endpoint id */
+ 	endpoint_t parent;	/* parent endpoint id */
+ 	unsigned flags;		/* flag bits */
+@@ -28,6 +28,7 @@ EXTERN struct schedproc {
+ 	/* User space scheduling */
+ 	unsigned max_priority;	/* this process' highest allowed priority */
+ 	unsigned priority;		/* the process' current priority */
++	unsigned used_quanta;	/* number of time quanta this process has used on the current priority */
+ 	unsigned time_slice;		/* this process's time slice */
+ 	unsigned cpu;		/* what CPU is the process running on */
+ 	bitchunk_t cpu_mask[BITMAP_CHUNKS(CONFIG_MAX_CPUS)]; /* what CPUs is the
+diff -rupN oryginalne-zrodla/usr/src/minix/servers/sched/schedule.c source/usr/src/minix/servers/sched/schedule.c
+--- oryginalne-zrodla/usr/src/minix/servers/sched/schedule.c	2014-09-13 23:56:50.000000000 +0200
++++ source/usr/src/minix/servers/sched/schedule.c	2019-05-27 18:30:29.735814983 +0200
+@@ -5,7 +5,6 @@
+  *   do_start_scheduling  Request to start scheduling a proc
+  *   do_stop_scheduling   Request to stop scheduling a proc
+  *   do_nice		  Request to change the nice level on a proc
+- *   init_scheduling      Called from main.c to set up/prepare scheduling
+  */
+ #include "sched.h"
+ #include "schedproc.h"
+@@ -14,13 +13,7 @@
+ #include <machine/archtypes.h>
+ #include "kernel/proc.h" /* for queue constants */
+ 
+-static minix_timer_t sched_timer;
+-static unsigned balance_timeout;
+-
+-#define BALANCE_TIMEOUT	5 /* how often to balance queues in seconds */
+-
+ static int schedule_process(struct schedproc * rmp, unsigned flags);
+-static void balance_queues(minix_timer_t *tp);
+ 
+ #define SCHEDULE_CHANGE_PRIO	0x1
+ #define SCHEDULE_CHANGE_QUANTUM	0x2
+@@ -87,7 +80,7 @@ static void pick_cpu(struct schedproc *
+  *				do_noquantum				     *
+  *===========================================================================*/
+ 
+-int do_noquantum(message *m_ptr)
++int do_noquantum(message *m_ptr) /* eas_2019 */
+ {
+ 	register struct schedproc *rmp;
+ 	int rv, proc_nr_n;
+@@ -99,8 +92,16 @@ int do_noquantum(message *m_ptr)
+ 	}
+ 
+ 	rmp = &schedproc[proc_nr_n];
+-	if (rmp->priority < MIN_USER_Q) {
+-		rmp->priority += 1; /* lower priority */
++	rmp->used_quanta += 1;
++	if (rmp->priority == MAX_USER_Q && rmp->used_quanta == 5) {
++		rmp->priority += 1;
++		rmp->used_quanta = 0;
++	} else if (rmp->priority == MAX_USER_Q + 1 && rmp->used_quanta == 10) {
++		rmp->priority += 1;
++		rmp->used_quanta = 0;
++	} else if (rmp->priority == MAX_USER_Q + 2 && rmp->used_quanta == 20) {
++		rmp->priority = MAX_USER_Q;
++		rmp->used_quanta = 0;
+ 	}
+ 
+ 	if ((rv = schedule_process_local(rmp)) != OK) {
+@@ -140,7 +141,7 @@ int do_stop_scheduling(message *m_ptr)
+ /*===========================================================================*
+  *				do_start_scheduling			     *
+  *===========================================================================*/
+-int do_start_scheduling(message *m_ptr)
++int do_start_scheduling(message *m_ptr) /* eas_2019 */
+ {
+ 	register struct schedproc *rmp;
+ 	int rv, proc_nr_n, parent_nr_n;
+@@ -167,6 +168,7 @@ int do_start_scheduling(message *m_ptr)
+ 	if (rmp->max_priority >= NR_SCHED_QUEUES) {
+ 		return EINVAL;
+ 	}
++	rmp->used_quanta = 0;
+ 
+ 	/* Inherit current priority and time slice from parent. Since there
+ 	 * is currently only one scheduler scheduling the whole system, this
+@@ -327,41 +329,3 @@ static int schedule_process(struct sched
+ 
+ 	return err;
+ }
+-
+-
+-/*===========================================================================*
+- *				start_scheduling			     *
+- *===========================================================================*/
+-
+-void init_scheduling(void)
+-{
+-	balance_timeout = BALANCE_TIMEOUT * sys_hz();
+-	init_timer(&sched_timer);
+-	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
+-}
+-
+-/*===========================================================================*
+- *				balance_queues				     *
+- *===========================================================================*/
+-
+-/* This function in called every 100 ticks to rebalance the queues. The current
+- * scheduler bumps processes down one priority when ever they run out of
+- * quantum. This function will find all proccesses that have been bumped down,
+- * and pulls them back up. This default policy will soon be changed.
+- */
+-static void balance_queues(minix_timer_t *tp)
+-{
+-	struct schedproc *rmp;
+-	int proc_nr;
+-
+-	for (proc_nr=0, rmp=schedproc; proc_nr < NR_PROCS; proc_nr++, rmp++) {
+-		if (rmp->flags & IN_USE) {
+-			if (rmp->priority > rmp->max_priority) {
+-				rmp->priority -= 1; /* increase priority */
+-				schedule_process_local(rmp);
+-			}
+-		}
+-	}
+-
+-	set_timer(&sched_timer, balance_timeout, balance_queues, 0);
+-}
